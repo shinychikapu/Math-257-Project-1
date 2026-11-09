@@ -23,7 +23,9 @@ Wave I: https://dataverse.unc.edu/dataset.xhtml?persistentId=doi:10.15139/S3/119
 
 Wave IV: https://dataverse.unc.edu/dataset.xhtml?persistentId=doi:10.15139/S3/11920
 
-Note that the data is not included in this repository. It is available for public use at Add Health Dataverse. The data is in SPSS format (`.sav`) and requires the `haven` package to read.
+Note that the data is not included in this repository. It is available for public use at Add Health Dataverse. The data is in SPSS format (`.sav`) and requires the `haven` package to read. 
+
+License: [Custom Dataset Terms](https://dataverse.unc.edu/api/datasets/:persistentId/versions/3.5/customlicense?persistentId=doi:10.15139/S3/11900)
 
 ## External Resources
 
