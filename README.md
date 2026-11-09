@@ -5,7 +5,7 @@
 
 ## Research Question
 
-Are adolescent autonomy, parental closeness, parental involvement, and family connection are associated with adult mental health, physical health, income, and financial security.
+Are adolescent autonomy, parental closeness, parental involvement, and family connection are associated with adult mental health, physical health, income, and financial security. How does Canonical Correlation Analysis perform compared to separate multiple regressions models.
 
 ## Project Structure
 
