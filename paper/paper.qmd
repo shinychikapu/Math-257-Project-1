@@ -1,0 +1,637 @@
+---
+title: "The Relationship Between Adolescent Family Environment and Adult Well-Being: A Comparison of Canonical Correlation Analysis and Separate Multiple Regression Models"
+author: "Gia Thy Le"
+date: today
+format: pdf
+include-in-header:
+  text: |
+    \usepackage{tikz}
+    \usepackage{float}
+    \floatplacement{table}{H}
+    \usepackage{etoolbox}
+    \makeatletter
+    \patchcmd{\@maketitle}{\huge}{\Large}{}{}
+    \makeatother
+thanks: "Github link for project: [Math 257 Project Link](https://github.com/shinychikapu/Math261A-Project-1)"
+bibliography: references.bib
+editor: visual
+echo: false
+warning: false
+---
+
+```{r}
+library(tidyverse)
+library(haven)
+library(dplyr)
+
+w1 <- read_sav("..\\data\\w1inhome_dvn.sav")
+w4 <- read_sav("..\\data\\w4inhome_dvn.sav")
+
+valid    <- function(x, ok) ifelse(x %in% ok, x, NA) #only keep answer scale 1-5
+rev     <- function(x) 6 - x #for questions which higher = worse
+mean_min <- function(d, min_n) { # row mean, put NA if too few items answered
+  m <- rowMeans(d, na.rm = TRUE)
+  m[rowSums(!is.na(d)) < min_n] <- NA
+  m
+}
+
+#survey questions
+auto_items <- paste0("H1WP", 1:6) #yes/no
+mom_items  <- c("H1WP9", "H1WP10", "H1PF1", "H1PF4") #scale 1-5
+dad_items  <- c("H1WP13", "H1WP14", "H1PF23", "H1PF24") #scale 1-5
+conn_items <- paste0("H1PR", 5:8) #scale 1-5
+mom_act <- setdiff(paste0("H1WP17", LETTERS[1:11]), c("H1WP17G", "H1WP17K")) #remove the 2 questions that doesnt seem to contribute to involvement
+dad_act <- setdiff(paste0("H1WP18", LETTERS[1:11]), c("H1WP18G", "H1WP18K"))
+rev_items <-c("H1PF1", "H1PF4", "H1PF23", "H1PF24", "H1PR6") #questions what higher = worse so need to reverse
+
+
+family <- w1 %>%
+  mutate(
+    across(all_of(c(auto_items, mom_act, dad_act)), ~ valid(.x, 0:1)),
+    across(all_of(c(mom_items, dad_items, conn_items)), ~ valid(.x, 1:5)),
+    across(rev_items, rev)
+  ) %>%
+  mutate(
+    autonomy  = mean_min(across(all_of(auto_items)), 5) * 6, #scale by multiplying 6
+    mom_close = mean_min(across(all_of(mom_items)), 3),
+    dad_close = mean_min(across(all_of(dad_items)), 3),
+    mom_inv   = mean_min(across(all_of(mom_act)), 8),
+    dad_inv   = mean_min(across(all_of(dad_act)), 8),
+    fam_conn  = mean_min(across(all_of(conn_items)), 3),
+
+    parent_close = mean_min(cbind(mom_close, dad_close), 1),
+    parent_inv   = mean_min(cbind(mom_inv, dad_inv), 1),
+
+    #check how many parents
+    structure = factor(case_when(
+      !is.na(mom_close) & !is.na(dad_close) ~ "two",
+      !is.na(mom_close)                     ~ "mom_only",
+      !is.na(dad_close)                     ~ "dad_only"
+    ))
+  ) %>%
+  select(AID,
+         all_of(c(auto_items, mom_items, dad_items, conn_items, mom_act, dad_act)),
+         autonomy, mom_close, dad_close, parent_close,
+         mom_inv, dad_inv, parent_inv, fam_conn, structure)
+
+#parent education (H1RM1/H1RF1) 
+ed_level <- function(x) { 
+  x <- as.numeric(x)
+  case_when(
+    x %in% c(1, 2, 3, 10) ~ 1, #less than high school (incl. never went to school)
+    x %in% c(4, 5)        ~ 2, #high school graduate or GED
+    x %in% c(6, 7)        ~ 3, #vocational school after high school or some college
+    x == 8                ~ 4, #college graduate
+    x == 9                ~ 5  #professional training beyond college
+  )                          #11, 12 (level unknown) and 96-99 (missing codes) become NA
+}
+
+inequality <- w1 %>%
+  transmute(
+    AID,
+    mom_ed    = ed_level(H1RM1),
+    dad_ed    = ed_level(H1RF1),
+    parent_ed = pmax(mom_ed, dad_ed, na.rm = TRUE) #highest education among resident parents
+  )
+
+family <- family %>%
+  left_join(inequality, by = "AID") %>%
+  mutate(two_parent = as.numeric(structure == "two")) #1 = two resident parents, 0 = one
+
+resource_vars <- c("parent_ed", "two_parent") #kin resources (inequality)
+X_vars <- c("autonomy", "parent_close", "parent_inv", "fam_conn", resource_vars) 
+
+#wave 4 survey questions (adult well-being)
+rev_scale <- function(x, lo, hi) lo + hi - x #reverse any scale (0-3, 0-4, ...)
+
+depress_items     <- paste0("H4MH", 18:27) #CES-D, scale 0-3
+depress_neg_items <- paste0("H4MH", c(18, 19, 21, 22, 23, 26, 27)) #higher = more depressed so need to reverse
+stress_items     <- paste0("H4MH", 3:6) #perceived stress, scale 0-4
+stress_neg_items <- c("H4MH3", "H4MH6") #higher = more stress so need to reverse
+hardship_items    <- paste0("H4EC", 10:15) #financial hardships in past 12 months, yes/no
+
+earn_breaks <- c(1, 5000, 10000, 15000, 20000, 25000, 30000, #lower limit of each personal earnings bracket
+                 40000, 50000, 75000, 100000, 150000) #0 = no earnings, 12 = $150,000 or more
+
+wellbeing <- w4 %>%
+  mutate(
+    across(all_of(depress_items), ~ valid(.x, 0:3)),
+    across(all_of(c(stress_items)), ~ valid(.x, 0:4)),
+    across(all_of(hardship_items), ~ valid(.x, 0:1)),
+    across(all_of(depress_neg_items), ~ rev_scale(.x, 0, 3)),
+    across(all_of(stress_neg_items), ~ rev_scale(.x, 0, 4))
+  ) %>%
+  mutate(
+    low_depression    = mean_min(across(all_of(depress_items)), 8), #higher = fewer depressive symptoms
+    low_stress = mean_min(across(all_of(stress_items)), 3), #higher = less stress
+    health     = rev(valid(H4GH1, 1:5)), #5 = excellent, 1 = poor
+    personal_income = coalesce(as.numeric(findInterval(valid(as.numeric(H4EC2), 0:999995), earn_breaks)), #dollars to bracket
+                            valid(H4EC3, 1:11)), #bracket given by people who didn't know exact earnings
+    finance_secure = 6 - mean_min(across(all_of(hardship_items)), 5) * 6 #6 = no hardships
+  ) %>%
+  select(AID, all_of(c(depress_items, stress_items, hardship_items)),
+         low_depression, low_stress, health, personal_income, finance_secure)
+
+Y_vars <- c("low_depression", "low_stress", "health", "personal_income", "finance_secure")
+
+#merge waves and drop NA
+analysis <- family %>%
+  select(AID, all_of(X_vars), structure) %>%
+  inner_join(wellbeing %>% select(AID, all_of(Y_vars)), by = "AID") %>%
+  drop_na(all_of(c(X_vars, Y_vars)))
+```
+
+# I. Introduction
+
+People can have very different adult outcomes depending on the family they grew up in. Close relationships may provide emotional support, and family resources shape opportunities. This project examines how adolescent family life is associated with adult mental health, physical health, income, and financial security, and compares separate multiple regressions with canonical correlation analysis (CCA).
+
+I use public-use data from the National Longitudinal Study of Adolescent to Adult Health (Add Health) [@S3/11900_2015; @S3/11920_2015], which interviewed U.S. adolescents in grades 7-12 in 1994-95 (Wave I) and again in 2008 (Wave IV). The first set of variables measures family relationships and family resources at Wave I, and the second measures adult well-being at Wave IV.
+
+The univariate approach fits one multiple regression for each of the five outcomes, giving 30 coefficient tests with and without a Bonferroni correction. CCA [@johnson_wichern2007; @gao_cca] finds the combinations of the two sets that are most strongly correlated and tests their overall relationship with one test. I compare the approaches on their tests, shared variance ($R^2$ and $\rho^2$), and coefficients and loadings.
+
+Both approaches show that family life is related to adult well-being, although the relationships are small. Of the 30 coefficients, 21 are significant and 18 remain so after the Bonferroni correction, while CCA reaches the conclusion that there are association between the two variable sets with one test. The first squared canonical correlation and largest $R^2_k$ are both modest ($R^2 = 0.064$ and $\hat\rho^{*}_{k} = 0.114$), The loadings show a general pattern and a weaker pattern separating family relationships and mental health from family resources and income whereas multiple regression show how each family variables contribute to different adult well-being outcomes. Multiple regression is better suited to questions about specific outcomes, while CCA is better for understanding how two groups of related variables are connected.
+
+# II. Data
+
+The observational unit is an individual Add Health respondent. The public-use data contain 6,504 adolescents at Wave I, of whom 5,114 were re-interviewed at Wave IV [@S3/11900_2015; @S3/11920_2015]. The two waves are linked by respondent ID. CCA and the regressions require complete data, so the analysis uses the 4,724 Wave IV respondents (92%) with no missing values. The largest sources of missing data are parent education (250 respondents) and personal income (125).
+
+@fig-variables shows the two sets of variables: the respondent's family in adolescence and their well-being as an adult. All variables are coded so that higher values mean more of the named characteristic or better well-being, with non-answers set to missing. Low depression uses a 10-item short form of the CES-D [@radloff1977], and low stress uses the 4-item Perceived Stress Scale [@cohen1983]. The Appendix lists the exact survey questions and scoring.
+
+::: {#fig-variables fig-pos="H"}
+
+```{=latex}
+\begin{center}
+\resizebox{0.88\textwidth}{!}{%
+\begin{tikzpicture}[
+  var/.style={draw, rounded corners=2pt, fill=#1, text width=7.4cm, minimum height=1.25cm, align=center, font=\footnotesize},
+  lab/.style={font=\footnotesize\bfseries, anchor=west},
+  head/.style={font=\small\bfseries, align=center}
+]
+\node[head] at (3.85,0) {First set: family in adolescence\\[1pt]{\normalfont\footnotesize Wave I, 1994--95}};
+\node[lab] at (0,-0.8) {Family relationships};
+\node[var=blue!8] at (3.85,-1.75) {\textbf{Autonomy}\\Decisions the teen makes: curfew, friends, clothes, TV time, TV shows, bedtime (0--6)};
+\node[var=blue!8] at (3.85,-3.3) {\textbf{Parent closeness}\\Mean of closeness, caring, warmth, and communication items for each resident parent (1--5)};
+\node[var=blue!8] at (3.85,-4.85) {\textbf{Parent involvement}\\Share of 9 activities done with resident parents in past 4 weeks, e.g., shopping (0--1)};
+\node[var=blue!8] at (3.85,-6.4) {\textbf{Family connectedness}\\Mean of feeling understood, having fun, getting attention, not wanting to leave (1--5)};
+\node[lab] at (0,-7.35) {Family resources};
+\node[var=blue!8] at (3.85,-8.2) {\textbf{Parent education}\\Highest schooling of resident parents, from 1 = less than high school to 5 = beyond college};
+\node[var=blue!8] at (3.85,-9.75) {\textbf{Two-parent household}\\1 = two resident parent figures, 0 = one};
+\node[head] at (13.35,0) {Second set: adult well-being\\[1pt]{\normalfont\footnotesize Wave IV, 2008}};
+\node[lab] at (9.5,-0.8) {Mental health};
+\node[var=teal!10] at (13.35,-1.75) {\textbf{Low depression}\\Mean of 10 CES-D items, past week, e.g., felt sad; higher = fewer symptoms (0--3)};
+\node[var=teal!10] at (13.35,-3.3) {\textbf{Low stress}\\Mean of 4 Perceived Stress Scale items, past 30 days; higher = less stress (0--4)};
+\node[lab] at (9.5,-4.25) {Physical health};
+\node[var=teal!10] at (13.35,-5.1) {\textbf{Self-rated health}\\General health, from 1 = poor to 5 = excellent};
+\node[lab] at (9.5,-6.05) {Economic well-being};
+\node[var=teal!10] at (13.35,-6.9) {\textbf{Personal income}\\Personal earnings in 13 ordered brackets, from 0 = none to 12 = \$150,000 or more};
+\node[var=teal!10] at (13.35,-8.45) {\textbf{Financial security}\\6 minus number of 6 past-year hardships, e.g., unpaid rent, worry about food (0--6)};
+\draw[<->, thick] (7.8,-4.85) -- (9.4,-4.85)
+  node[midway, above, align=center, font=\footnotesize] {regressions\\and CCA};
+\end{tikzpicture}}
+\end{center}
+```
+
+Variables in the two sets and how each is scored. Exact survey questions are listed in the Appendix.
+
+:::
+"Parents" in Add Health include biological, step, adoptive, and foster parents who live with the respondent, so a two-parent household means two resident parent figures, not two biological parents necessarily. Discrete variables, such as parent education, self-rated health, personal income brackets, and the autonomy and financial security counts, are treated as continuous, which assumes that the steps between levels are equal.
+
+```{r}
+#| label: tbl-correlation
+#| tbl-cap: "Correlations matrix. Variables 1--6 are the first set (family) and variables 7--11 are the second set (adult well-being)."
+
+library(knitr)
+
+var_labels <- c(
+  autonomy = "Autonomy", parent_close = "Parent closeness",
+  parent_inv = "Parent involvement", fam_conn = "Family connectedness",
+  parent_ed = "Parent education", two_parent = "Two-parent household",
+  low_depression = "Low depression", low_stress = "Low stress",
+  health = "Self-rated health", personal_income = "Personal income",
+  finance_secure = "Financial security"
+)
+
+cor_vars <- c(X_vars, Y_vars)
+cor_mat  <- cor(analysis[, cor_vars])
+
+cor_table <- as.data.frame(apply(cor_mat, 2, function(x) sub("0.", ".", sprintf("%.2f", x), fixed = TRUE)))
+colnames(cor_table) <- seq_along(cor_vars) #numbered columns
+cor_labels <- c("Autonomy", "Closeness", "Involvement", "Connectedness", "Parent educ.", "Two parents",
+                "Low depression", "Low stress", "Health", "Income", "Fin. security") #same order as cor_vars
+cor_table <- cbind(Variable = paste0(seq_along(cor_vars), ". ", cor_labels), cor_table)
+
+p <- length(X_vars)
+q <- length(Y_vars)
+
+kable(cor_table,
+      format = "latex",
+      booktabs = TRUE,
+      row.names = FALSE,
+      align = c("l|", rep("r", p - 1), "r|", rep("r", q)), #vertical line between the two sets
+      linesep = c(rep("", p - 1), "\\midrule", rep("", q))) #horizontal line between the two sets
+```
+
+@tbl-correlation shows the correlation between variables. Within the family set, parent closeness and family connectedness are strongly correlated ($r = 0.65$), while autonomy is nearly uncorrelated with the other family variables. Within the well-being set, low depression and low stress are strongly correlated ($r = 0.67$), and the remaining well-being variables are moderately correlated with each other ($r$ between 0.18 and 0.33). Across the two sets, every individual correlation is small, the highest being personal income and parents' highest education ($r = 0.21$).
+
+# III. Methods
+
+## Notation
+
+Let $\mathbf{X}^{(1)}$ be the $p \times 1$ vector of family variables ($p = 6$) and $\mathbf{X}^{(2)}$ the $q \times 1$ vector of well-being variables ($q = 5$), measured on the same $n$ respondents. All variables are standardized.
+
+## Univariate approach: separate multiple regressions
+
+The univariate approach fits one multiple linear regression for each of the $q = 5$ well-being outcomes [@gelman_regression_2021]. For respondent $i$ ($i = 1, \dots, n$) and outcome $k$ ($k = 1, \dots, 5$), the model is
+
+$$
+X^{(2)}_{ik} = \beta_{0k} + \sum_{j=1}^{6} \beta_{jk} X^{(1)}_{ij} + \varepsilon_{ik},
+$$
+
+where $X^{(2)}_{ik}$ is respondent $i$'s value of well-being outcome $k$, $X^{(1)}_{ij}$ is their value of family variable $j$, $\beta_{0k}$ is the intercept, and $\varepsilon_{ik}$ is the error term. Each coefficient $\beta_{jk}$ represents the expected change in well-being outcome $k$ associated with a one-unit increase in family variable $j$, while holding the other family variables constant.Each model is summarized by $R^2_k$, the proportion of the variance in outcome $k$ explained by the six family variables. Each model uses only one outcome, so it ignores how the outcomes are related. I assume linearity and additivity, and independent, normal, equal variance errors, although these may not hold exactly. Parent closeness and family connectedness are correlated ($r = 0.65$), which makes their coefficients less precise.
+
+For each coefficient, I test $H_0: \beta_{jk} = 0$ against $H_1: \beta_{jk} \neq 0$ using the statistic $t_{jk} = \hat{\beta}_{jk} / \text{SE}(\hat{\beta}_{jk})$, where $\hat{\beta}_{jk}$ is the estimated coefficient and $\text{SE}(\hat{\beta}_{jk})$ is its standard error. Under $H_0$, this statistic follows a $t$ distribution with $n - p - 1$ degrees of freedom. With 6 family variables and 5 outcomes, this approach requires $6 \times 5 = 30$ tests. If each test uses significance level $\alpha = 0.05$, assuming independent and normal errors, the probability of at least one false positive is $1 - 0.95^{30} \approx 0.79$. A Bonferroni correction addresses this by using the stricter level $\alpha / 30 \approx 0.0017$ for each test, which keeps the probability of any false positive at or below 0.05. I report results both without adjustment and with the Bonferroni correction.
+
+
+
+## Multivariate approach: canonical correlation analysis
+
+CCA relates the two sets directly [@johnson_wichern2007; @gao_cca]. Let $\boldsymbol{\Sigma}_{11}$ ($p \times p$) and $\boldsymbol{\Sigma}_{22}$ ($q \times q$) be the covariance matrices of $\mathbf{X}^{(1)}$ and $\mathbf{X}^{(2)}$, and let $\boldsymbol{\Sigma}_{12} = \boldsymbol{\Sigma}_{21}^\top$ be the covariance matrix between them. Because the variables are standardized, these are correlation matrices. For weight vectors $\mathbf{a}$ and $\mathbf{b}$, CCA forms the canonical variates $U = \mathbf{a}^\top \mathbf{X}^{(1)}$ and $V = \mathbf{b}^\top \mathbf{X}^{(2)}$ and maximizes
+
+$$
+\text{Corr}(U, V) = \frac{\mathbf{a}^\top \boldsymbol{\Sigma}_{12} \mathbf{b}}{\sqrt{\mathbf{a}^\top \boldsymbol{\Sigma}_{11} \mathbf{a}} \sqrt{\mathbf{b}^\top \boldsymbol{\Sigma}_{22} \mathbf{b}}}.
+$$
+
+Let $\rho_1^{*2} \geq \dots \geq \rho_5^{*2}$ be the five largest eigenvalues of the two matrices below, with eigenvectors $\mathbf{e}_k$ and $\mathbf{f}_k$:
+
+$$
+\boldsymbol{\Sigma}_{11}^{-1/2} \boldsymbol{\Sigma}_{12} \boldsymbol{\Sigma}_{22}^{-1} \boldsymbol{\Sigma}_{21} \boldsymbol{\Sigma}_{11}^{-1/2}, \qquad \boldsymbol{\Sigma}_{22}^{-1/2} \boldsymbol{\Sigma}_{21} \boldsymbol{\Sigma}_{11}^{-1} \boldsymbol{\Sigma}_{12} \boldsymbol{\Sigma}_{22}^{-1/2}.
+$$
+
+The $k$th pair of canonical variates is
+
+$$
+U_k = \mathbf{e}_k^\top \boldsymbol{\Sigma}_{11}^{-1/2} \mathbf{X}^{(1)}, \qquad V_k = \mathbf{f}_k^\top \boldsymbol{\Sigma}_{22}^{-1/2} \mathbf{X}^{(2)}, \qquad \text{Corr}(U_k, V_k) = \rho_k^*,
+$$
+
+and each pair is uncorrelated with the earlier pairs, so each describes a separate pattern. With $p = 6$ and $q = 5$, there are five pairs. I interpret the results using loadings, the correlations between each variable and its canonical variate, because they are more stable than the weights when variables in a set are correlated.
+
+To test whether the two sets are related, $H_0: \boldsymbol{\Sigma}_{12} = \mathbf{0}$, I use Bartlett's approximation and reject $H_0$ at level $\alpha$ if
+
+$$
+-\left(n - 1 - \tfrac{1}{2}(p + q + 1)\right) \ln \prod_{k=1}^{5} \left(1 - \hat{\rho}_k^{*2}\right) > \chi^2_{pq}(\alpha),
+$$
+
+where $\hat{\rho}_k^*$ is the $k$th sample canonical correlation and $\chi^2_{pq}(\alpha)$ is the upper $(100\alpha)th$ percentile of a chi-square distribution with $pq = 30$ degrees of freedom. CCA assumes linear relationships and the covariance matrix to have full rank. The Barlett's approximation also assumes independent respondents and multivariate normality, so its $p$-value is approximate because binary and bracketed variables are not normal.
+
+## Comparing the two approaches
+
+Both methods use the same respondents and variables, but they differ in four key ways. First, the regressions predict one outcome at a time, while CCA relates the two sets as a whole, with neither treated as predictors. Second, each regression minimizes prediction error for an observed outcome, while CCA weights both sets to create new variables that are as correlated as possible. Third, the regressions ignore the correlations among the outcomes, while CCA uses them. Fourth, the regressions require 30 tests, while CCA gives one overall test.
+
+With only one outcome, CCA reduces to multiple regression. I compare the two methods in three ways.
+
+1. **Tests.** I compare the number of the 30 regression coefficients significant at $\alpha = 0.05$ and at the Bonferroni level $\alpha / 30$ with the single CCA test.
+2. **$R^2$ and $\rho^2$.** Squared canonical correlations act like a multivariate $R^2$, so I compare $\hat{\rho}_1^{*2}$ with the largest $R^2_k$ to see how much stronger the relationship is when outcomes are considered together.
+3. **Coefficients and loadings.** A coefficient shows a variable's contribution to one outcome with the other family variables held constant, while loadings show which variables go together in each canonical pair, a pattern the regressions cannot identify because each model looks at only one outcome.
+
+I expect each $R^2_k$ to be small, because family life in adolescence is measured more than a decade before the outcomes and many other things affect adult well-being. Because parent closeness and family connectedness are correlated, I expect one of them to have a weak coefficient. For CCA, I expect the overall test to reject $H_0$ and the first canonical correlation to be small for the same reason. I also expect family resources to relate mainly to economic outcomes and family relationships to relate mainly to mental health, since resources shape financial opportunities while close relationships provide emotional support.
+
+# IV. Results
+
+## Separate regressions
+
+```{r}
+#| label: tbl-regression
+#| tbl-cap: "Standardized coefficients from the five regressions. One star means p < 0.05, and two stars means the coefficient is also significant at the Bonferroni level (p < 0.05/30)."
+
+X_std <- scale(analysis[X_vars]) #standardized first set
+Y_std <- scale(analysis[Y_vars]) #standardized second set
+
+reg_fits <- summary(lm(Y_std ~ X_std))
+reg_b    <- sapply(reg_fits, function(f) coef(f)[-1, "Estimate"])
+reg_p    <- sapply(reg_fits, function(f) coef(f)[-1, "Pr(>|t|)"])
+reg_r2   <- sapply(reg_fits, function(f) f$r.squared)
+
+reg_stars <- ifelse(reg_p < 0.05 / length(reg_p), "**", ifelse(reg_p < 0.05, "*", ""))
+reg_cells <- matrix(paste0(sprintf("%.3f", reg_b), reg_stars), nrow = nrow(reg_b))
+
+reg_table <- rbind(reg_cells, sprintf("%.3f", reg_r2))
+
+reg_table <- data.frame(unname(c(var_labels[X_vars], "$R^2$")), reg_table)
+colnames(reg_table) <- c("", tail(cor_labels, length(Y_vars)))
+
+kable(reg_table,
+      format = "latex",
+      booktabs = TRUE,
+      escape = FALSE,
+      row.names = FALSE,
+      align = c("l", rep("r", length(Y_vars))),
+      linesep = c(rep("", length(X_vars) - 1), "\\midrule", ""))
+```
+
+@tbl-regression shows the five regressions. A coefficient of 0.10 means that if we increase a family variable by 1 standard deviation and hold other family variables constant, the ourcome is expected to be 0.10 standard deviations higher. Of the 30 coefficients, 21 are significant at $\alpha = 0.05$ and 18 remain significant after the Bonferroni correction. The family variables explain only 3.6% to 6.4% of the variance in each outcome. Family connectedness has the largest coefficients for low depression and low stress, parent education for personal income and self-rated health, and living with two parents for financial security. Parent closeness is significant only for low depression, even though it is positively correlated with all five outcomes (@tbl-correlation), likely because it overlaps with family connectedness ($r = 0.65$).
+
+## Canonical correlation analysis
+
+```{r}
+#| label: tbl-cca
+#| tbl-cap: "Canonical correlations between the family variables and the well-being variables."
+
+X <- scale(analysis[, X_vars])
+Y <- scale(analysis[, Y_vars])
+cc <- cancor(X, Y)
+rho <- cc$cor
+
+n <- nrow(X)
+bartlett_stat <- -(n - 1 - (p + q + 1) / 2) * sum(log(1 - rho^2)) #Bartlett's approximation
+bartlett_p    <- pchisq(bartlett_stat, df = p * q, lower.tail = FALSE)
+
+cca_table <- rbind(sprintf("%.3f", rho), sprintf("%.3f", rho^2), rep("", length(rho)))
+colnames(cca_table) <- paste("Pair", seq_along(rho))
+
+bartlett_row <- paste0("Bartlett's test: $\\chi^2$ = ", sprintf("%.1f", bartlett_stat), ", df = ", p * q, ", ", paste0("$p = ", sub("e", " \\times 10^{", sprintf("%.2e", bartlett_p), fixed = TRUE), "}$"))
+rownames(cca_table) <- c("Canonical correlation", "Squared canonical correlation", bartlett_row)
+
+kable(cca_table, booktabs = TRUE, escape = FALSE)
+```
+
+@tbl-cca shows the canonical correlations. The first two (0.338 and 0.150) are much larger than the other three, so I interpret only those pairs, which share 11.4% and 2.3% of their variance. Bartlett's test rejects the hypothesis that the two sets are unrelated ($\chi^2 = 712.3$, 30 degrees of freedom, $p < 0.05$).
+
+```{r}
+#| label: fig-loadings
+#| fig-cap: "Loadings for the first two pairs of canonical variates. A loading is the correlation between a variable and its canonical variate."
+#| fig-width: 6.5
+#| fig-height: 3
+
+# Canonical variates (scores)
+k <- length(rho)
+U <- as.matrix(X) %*% cc$xcoef[, 1:k] # corresponding to family variables
+V <- as.matrix(Y) %*% cc$ycoef[, 1:k] # corresponding to well-being variables
+colnames(U) <- colnames(V) <- paste0("CV", 1:k)
+
+# Loadings (correlation of each original variable with each variate)
+load_x <- cor(X, U)
+load_y <- cor(Y, V)
+
+## Bar chart of loadings
+df_load <- bind_rows(
+  as.data.frame(load_x) %>% rownames_to_column("Variable") %>% mutate(Set = "Family (first set)"),
+  as.data.frame(load_y) %>% rownames_to_column("Variable") %>% mutate(Set = "Well-being (second set)")
+) %>%
+  pivot_longer(CV1:CV2, names_to = "Dim", values_to = "Loading") %>%
+  mutate(Variable = unname(var_labels[Variable]))
+
+ggplot(df_load, aes(reorder(Variable, Loading), Loading, fill = Set)) +
+  geom_col() +
+  geom_text(aes(label = sprintf("%.2f", Loading), hjust = ifelse(Loading >= 0, -0.15, 1.15)), size = 2.3, color = "grey20") + #value at the end of each bar
+  coord_flip() +
+  facet_wrap(~Dim) +
+  scale_fill_manual(values = c("#1D428A", "#C8102E"), name = NULL) +
+  scale_y_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) +
+  labs(x = NULL, y = "Correlation with variate") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+@fig-loadings shows the loadings for the first two pairs. In the first pair, every variable loads positively which shows a general pattern in which respondents from families with more resources and stronger connection do better across every area of adult well-being.
+
+In the second pair, family connectedness and parent closeness are positive and parent education and autonomy are negative. Low depression and low stress also have opposite signs to personal income. This partly matches my expectation that family relationships relate to mental health and family resources relate to income, as these variables are in the same direction.
+
+```{r}
+#| label: fig-scatter
+#| fig-cap: "First pair of canonical variates, colored by parent education (left) and family structure (right)."
+#| fig-width: 6.5
+#| fig-height: 2.8
+
+library(patchwork)
+
+df_sc <- tibble(U1 = U[, 1], V1 = V[, 1],
+                structure = factor(analysis$structure,
+                                   levels = c("two", "mom_only", "dad_only"),
+                                   labels = c("Two parents", "Mother only", "Father only")),
+                parent_ed = factor(analysis$parent_ed, levels = 1:5,
+                                   labels = c("Less than HS", "HS or GED", "Some college",
+                                              "College", "Beyond college")))
+
+base_plot <- ggplot(df_sc, aes(U1, V1)) +
+  labs(x = "U1 (family)", y = "V1 (adult well-being)") +
+  theme_minimal(base_size = 9) +
+  theme(legend.position = "top", legend.text = element_text(size = 6.5),
+        legend.key.width = unit(0.25, "cm"))
+
+p_ed <- base_plot +
+  geom_point(aes(color = parent_ed), alpha = 0.4, size = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.5) +
+  scale_color_manual(values = c("#9ec5f4", "#5598e7", "#2a78d6", "#184f95", "#0b2f5e"), name = NULL) +
+  guides(color = guide_legend(nrow = 2, override.aes = list(alpha = 1, size = 2)))
+
+p_str <- base_plot +
+  geom_point(aes(color = structure), alpha = 0.4, size = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.5) +
+  scale_color_manual(values = c("#2a78d6", "#eb6834", "#1baf7a"), name = NULL) +
+  guides(color = guide_legend(nrow = 2, override.aes = list(alpha = 1, size = 2)))
+
+p_ed + p_str
+```
+
+@fig-scatter plots the first pair, colored by parent education and by family structure. Respondents with college-educated parents and those who lived with two parents tend to score higher on $V_1$. They also score higher on $U_1$, but this is partly because those variables make up $U_1$.
+
+```{r}
+#| label: fig-scatter2
+#| fig-cap: "Second pair of canonical variates, colored by parent education (left) and family structure (right)."
+#| fig-width: 6.5
+#| fig-height: 2.8
+
+library(patchwork)
+
+df_sc2 <- tibble(U2 = U[, 2], V2 = V[, 2],
+                structure = factor(analysis$structure,
+                                   levels = c("two", "mom_only", "dad_only"),
+                                   labels = c("Two parents", "Mother only", "Father only")),
+                parent_ed = factor(analysis$parent_ed, levels = 1:5,
+                                   labels = c("Less than HS", "HS or GED", "Some college",
+                                              "College", "Beyond college")))
+
+base_plot2 <- ggplot(df_sc2, aes(U2, V2)) +
+  labs(x = "U2 (family)", y = "V2 (adult well-being)") +
+  theme_minimal(base_size = 9) +
+  theme(legend.position = "top", legend.text = element_text(size = 6.5),
+        legend.key.width = unit(0.25, "cm"))
+
+p_ed2 <- base_plot2 +
+  geom_point(aes(color = parent_ed), alpha = 0.4, size = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.5) +
+  scale_color_manual(values = c("#9ec5f4", "#5598e7", "#2a78d6", "#184f95", "#0b2f5e"), name = NULL) +
+  guides(color = guide_legend(nrow = 2, override.aes = list(alpha = 1, size = 2)))
+
+p_str2 <- base_plot2 +
+  geom_point(aes(color = structure), alpha = 0.4, size = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.5) +
+  scale_color_manual(values = c("#2a78d6", "#eb6834", "#1baf7a"), name = NULL) +
+  guides(color = guide_legend(nrow = 2, override.aes = list(alpha = 1, size = 2)))
+
+p_ed2 + p_str2
+```
+
+@fig-scatter2 plots the second pair, whose cloud is rounder because the correlation is weaker (0.150). A respondent who scores high on both $U_2$ and $V_2$ comes from a family that is strong on relationships relative to its resources and autonomy and has good mental health relative to their income as an adult, while a respondent who scores low on both shows the reverse.
+
+## Comparison
+
+### Tests
+
+Both approaches find a relationship between family life and adult well-being. CCA reaches this conclusion with one overall test ($\chi^2 = 712.3$, 30 degrees of freedom, $p < 0.001$), while 21 of the 30 regression coefficients are significant and 18 remain so after the Bonferroni correction. The regressions also show which specific relationships are significant. Parent education and living with two parents are significant for every outcome, while parent closeness is not significant for four outcomes, likely because it overlaps with family connectedness. The family relationship variables also add little for personal income, which is more closely tied to family resources.
+
+### $R^2$ and $\rho^2$
+
+Across the five regressions, the family variables explain between 3.6% and 6.4% of the variance in any one outcome, with the largest $R^2_k$ (0.064) for low depression. The first squared canonical correlation is 0.114, almost twice as large. However, 0.114 is the variance shared between $U_1$ and $V_1$, two linear combinations that CCA chose for the two set to be as correlated as possible. It does not mean that family life explains 11.4% of any one outcome. For a specific outcome, the regression $R^2_k$ is the better measure.
+
+### Coefficients and loadings
+
+The two approaches measure different things for each variable. A regression coefficient shows what a family variable adds to the prediction of one adult outcome, holding other family variables constant. A loading shows how strongly a family variable is correlated with the family variate, so it describes which variables define each pattern rather than a direct link to any adult outcome. Parent closeness is significant for only one outcome in the regressions, likely because it overlaps with family connectedness, while CCA loadings show that it helps define the family side of both canonical pairs. Its connection to adult well-being in CCA is indirect because it depends on the correlations between the variates.
+
+# V. Discussion
+
+Both methods show that family life in adolescence is related to well-being more than a decade later, but the relationships are small. On testing, 21 of the 30 regression coefficients are significant, and 18 remain so after the Bonferroni correction, while CCA reaches the same overall conclusion with one test. The first squared canonical correlation (0.114) is almost twice the largest $R^2_k$ (0.064), although it describes the canonical variates rather than any one outcome. Regressions show that parent education and living with two parents are significant for every outcome, while the loadings summarize the relationship as a general pattern and a weaker pattern separating family relationships and mental health from family resources and income.
+
+Separate regressions are easy to interpret, because each coefficient shows what a family variable adds for one specific outcome. However, they require many tests, ignore the correlations among the outcomes, and do not summarize the overall relationship. CCA uses one overall test, accounts for the correlations within and between the two sets, and reduces many relationships to a few patterns. But, its variates are harder to interpret, and its loadings do not show direct links to specific outcomes. Multiple Regression is the better choice when the question is about particular outcomes, while CCA is the better choice when the question is how two groups of related variables are connected overall. Both can also be used to give the overall pattern and the detail for each outcome.
+
+This study has several weaknesses. Both methods describe only linear relationships, and discrete variables are treated as continuous. All variables are self-reported and the analysis uses only complete cases without survey weights. Respondents are treated as independent even though students were sampled within schools. Future work could account for age, sex, and family income, use survey weights, compare racial and ethnic groups, or use kernel CCA to look for nonlinear relationships.
+
+# References
+
+\noindent Software: R [@R-core-2025], tidyverse [@tidyverse2019], haven [@haven], knitr [@knitr2015], patchwork [@patchwork], and Quarto [@quarto2025].
+
+::: {#refs}
+:::
+
+# Appendix: Survey Questions Used
+
+This appendix lists every Add Health survey question used in the analysis. Question wording follows the Wave I and Wave IV public-use codebooks. Items marked "Yes" in the Reversed column are reverse-coded before scoring so that a higher value always means a better outcome or more of the named characteristic. Refused, legitimate skip, don't know, and not applicable responses are treated as missing.
+
+**Response scales**
+
+- **Yes/No:** 0 = no, 1 = yes.
+- **Amount:** 1 = not at all, 2 = very little, 3 = somewhat, 4 = quite a bit, 5 = very much.
+- **Agreement:** 1 = strongly agree, 2 = agree, 3 = neither agree nor disagree, 4 = disagree, 5 = strongly disagree.
+- **CES-D:** 0 = never or rarely, 1 = sometimes, 2 = a lot of the time, 3 = most of the time or all of the time.
+- **Stress:** 0 = never, 1 = almost never, 2 = sometimes, 3 = fairly often, 4 = very often.
+
+## Wave I: autonomy
+
+Autonomy is the share of these six decisions the respondent makes, multiplied by 6 (range 0 to 6).
+
+| Item | Question | Scale | Reversed |
+|:----------|:----------------------------------------|:----------|:--------|
+| H1WP1 | Do your parents let you make your own decisions about the time you must be home on weekend nights? | Yes/No | No |
+| H1WP2 | Do your parents let you make your own decisions about the people you hang around with? | Yes/No | No |
+| H1WP3 | Do your parents let you make your own decisions about what you wear? | Yes/No | No |
+| H1WP4 | Do your parents let you make your own decisions about how much television you watch? | Yes/No | No |
+| H1WP5 | Do your parents let you make your own decisions about which television programs you watch? | Yes/No | No |
+| H1WP6 | Do your parents let you make your own decisions about what time you go to bed on week nights? | Yes/No | No |
+
+## Wave I: parent closeness
+
+Parent closeness is the mean of the four items for each resident parent, averaged over the parents who live with the respondent (range 1 to 5).
+
+| Item | Question | Scale | Reversed |
+|:----------|:----------------------------------------|:----------|:--------|
+| H1WP9 | How close do you feel to your [mother figure]? | Amount | No |
+| H1WP10 | How much do you think she cares about you? | Amount | No |
+| H1PF1 | Most of the time, your mother is warm and loving toward you. | Agreement | Yes |
+| H1PF4 | You are satisfied with the way your mother and you communicate with each other. | Agreement | Yes |
+| H1WP13 | How close do you feel to your [father figure]? | Amount | No |
+| H1WP14 | How much do you think he cares about you? | Amount | No |
+| H1PF23 | Most of the time, your father is warm and loving toward you. | Agreement | Yes |
+| H1PF24 | You are satisfied with the way your father and you communicate with each other. | Agreement | Yes |
+
+## Wave I: parent involvement
+
+Respondents were asked, "Which of the things listed on this card have you done with your [mother figure] in the past 4 weeks?" (H1WP17) and the same question about their father figure (H1WP18). Each activity is coded Yes/No. Parent involvement is the proportion of the nine activities below done with each resident parent, averaged over the parents who live with the respondent (range 0 to 1).
+
+| Mother item | Father item | Activity |
+|:----------|:----------|:----------------------------------------|
+| H1WP17A | H1WP18A | gone shopping |
+| H1WP17B | H1WP18B | played a sport |
+| H1WP17C | H1WP18C | gone to a religious service or church-related event |
+| H1WP17D | H1WP18D | talked about someone you're dating, or a party you went to |
+| H1WP17E | H1WP18E | gone to a movie, play, museum, concert, or sports event |
+| H1WP17F | H1WP18F | had a talk about a personal problem you were having |
+| H1WP17H | H1WP18H | talked about your school work or grades |
+| H1WP17I | H1WP18I | worked on a project for school |
+| H1WP17J | H1WP18J | talked about other things you're doing in school |
+
+Two options on the card are excluded: "had a serious argument about your behavior" (H1WP17G, H1WP18G), which describes conflict rather than involvement, and "none" (H1WP17K, H1WP18K), which is not an activity.
+
+## Wave I: family connectedness
+
+Family connectedness is the mean of the four items (range 1 to 5).
+
+| Item | Question | Scale | Reversed |
+|:----------|:----------------------------------------|:----------|:--------|
+| H1PR5 | How much do you feel that people in your family understand you? | Amount | No |
+| H1PR6 | How much do you feel that you want to leave home? | Amount | Yes |
+| H1PR7 | How much do you feel that you and your family have fun together? | Amount | No |
+| H1PR8 | How much do you feel that your family pays attention to you? | Amount | No |
+
+## Wave I: family resources
+
+| Item | Question | Use |
+|:--------------|:---------------------------------|:-------------|
+| H1RM1 | How far in school did she go? (resident mother) | parent education |
+| H1RF1 | How far in school did he go? (resident father) | parent education |
+
+Parent education is grouped from the original response options as follows.
+
+| Level | Original responses |
+|:---|:----------------------------------------------|
+| 1 | never went to school; eighth grade or less; more than eighth grade but did not graduate from high school; business, trade, or vocational school instead of high school |
+| 2 | high school graduate; completed a GED |
+| 3 | business, trade, or vocational school after high school; went to college but did not graduate |
+| 4 | graduated from a college or university |
+| 5 | professional training beyond a four-year college or university |
+
+Responses indicating that the respondent did not know the parent's level of schooling are treated as missing. The two-parent household indicator is derived from whether the respondent answered the closeness questions about both a resident mother figure and a resident father figure.
+
+## Wave IV: low depression
+
+Each question refers to the past seven days. Low depression is the mean of the 10 items after reversing the negative items, so a higher value means fewer symptoms (range 0 to 3).
+
+| Item | Question | Scale | Reversed |
+|:----------|:----------------------------------------|:----------|:--------|
+| H4MH18 | You were bothered by things that usually don't bother you. | CES-D | Yes |
+| H4MH19 | You could not shake off the blues, even with help from your family and your friends. | CES-D | Yes |
+| H4MH20 | You felt you were just as good as other people. | CES-D | No |
+| H4MH21 | You had trouble keeping your mind on what you were doing. | CES-D | Yes |
+| H4MH22 | You felt depressed. | CES-D | Yes |
+| H4MH23 | You felt that you were too tired to do things. | CES-D | Yes |
+| H4MH24 | You felt happy. | CES-D | No |
+| H4MH25 | You enjoyed life. | CES-D | No |
+| H4MH26 | You felt sad. | CES-D | Yes |
+| H4MH27 | You felt that people disliked you. | CES-D | Yes |
+
+## Wave IV: low stress
+
+Low stress is the mean of the four items after reversing the negative items, so a higher value means less stress (range 0 to 4).
+
+| Item | Question | Scale | Reversed |
+|:----------|:----------------------------------------|:----------|:--------|
+| H4MH3 | In the last 30 days, how often have you felt that you were unable to control the important things in your life? | Stress | Yes |
+| H4MH4 | In the last 30 days, how often have you felt confident in your ability to handle your personal problems? | Stress | No |
+| H4MH5 | In the last 30 days, how often have you felt that things were going your way? | Stress | No |
+| H4MH6 | In the last 30 days, how often have you felt that difficulties were piling up so high that you could not overcome them? | Stress | Yes |
+
+## Wave IV: self-rated health and economic well-being
+
+| Item | Question | Scale | Reversed |
+|:--------|:-------------------------------------|:------------|:---------|
+| H4GH1 | In general, how is your health? | 1 = excellent to 5 = poor | Yes |
+| H4EC2 | Now think about your personal earnings. How much income did you receive from personal earnings before taxes, that is, wages or salaries, including tips, bonuses, and overtime pay, and income from self-employment? | Dollars | No |
+| H4EC3 | (Asked if the respondent did not know H4EC2.) What is your best guess of your personal earnings before taxes? | 11 income brackets | No |
+| H4EC10 | In the past 12 months, was there a time when you or your household was without phone service because you didn't have enough money? | Yes/No | counted |
+| H4EC11 | In the past 12 months, was there a time when you or your household didn't pay the full amount of the rent or mortgage because you didn't have enough money? | Yes/No | counted |
+| H4EC12 | In the past 12 months, was there a time when you or your household were evicted from your house or apartment for not paying the rent or mortgage? | Yes/No | counted |
+| H4EC13 | In the past 12 months, was there a time when you or your household didn't pay the full amount of a gas, electricity, or oil bill because you didn't have enough money? | Yes/No | counted |
+| H4EC14 | In the past 12 months, was there a time when you or your household had the service turned off by the gas or electric company, or the oil company wouldn't deliver, because payments were not made? | Yes/No | counted |
+| H4EC15 | In the past 12 months, was there a time when you or your household worried whether food would run out before you would get money to buy more? | Yes/No | counted |
+
+Financial security is calculated as $6-\text{number of economic hardships}$, so that financial security = 6 means that no economic hardship was encountered.
+
