@@ -12,7 +12,7 @@ include-in-header:
     \makeatletter
     \patchcmd{\@maketitle}{\huge}{\Large}{}{}
     \makeatother
-thanks: "Github link for project: [Math 257 Project Link](https://github.com/shinychikapu/Math261A-Project-1)"
+thanks: "Github link for project: [Math 257 Project Link](https://github.com/shinychikapu/Math-257-Project-1)"
 bibliography: references.bib
 editor: visual
 echo: false
